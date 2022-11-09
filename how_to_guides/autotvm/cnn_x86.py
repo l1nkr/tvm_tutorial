@@ -12,7 +12,8 @@ def get_network(name, batch_size):
     """Get the symbol definition and random weight of a network"""
     input_shape = (batch_size, 3, 224, 224)
     output_shape = (batch_size, 1000)
-
+    # todo 
+    # 这部分是如何获取到 mod, params，具体是怎么执行的
     if "resnet" in name:
         n_layer = int(name.split("-")[1])
         mod, params = relay.testing.resnet.get_workload(
@@ -108,6 +109,8 @@ def tune_and_evaluate(tuning_opt):
     # extract workloads from relay program
     print("Extract tasks...")
     mod, params, data_shape, out_shape = get_network(model_name, batch_size)
+    # 首先需要提取tasks，确定哪些计算内核需要被优化
+    # 就我的猜测来说，这个地方应该和前端转换的目标类似，都是为了拿到relay ir。
     tasks = autotvm.task.extract_from_program(
         mod["main"], target=target, params=params, ops=(relay.op.get("nn.conv2d"),)
     )
@@ -117,11 +120,11 @@ def tune_and_evaluate(tuning_opt):
     tune_graph(mod["main"], data_shape, log_file, graph_opt_sch_file)
 
     # compile kernels in default mode
-    print("Evaluation of the network compiled in 'default' mode without auto tune:")
-    with tvm.transform.PassContext(opt_level=3):
-        print("Compile...")
-        lib = relay.build(mod, target=target, params=params)
-        evaluate_performance(lib, data_shape)
+    # print("Evaluation of the network compiled in 'default' mode without auto tune:")
+    # with tvm.transform.PassContext(opt_level=3):
+    #     print("Compile...")
+    #     lib = relay.build(mod, target=target, params=params)
+    #     evaluate_performance(lib, data_shape)
 
     # compile kernels in kernel tuned only mode
     print("\nEvaluation of the network been tuned on kernel level:")
@@ -150,7 +153,8 @@ target = "llvm"
 batch_size = 1
 dtype = "float32"
 model_name = "resnet-18"
-log_file = "%s.log" % model_name
+# log_file = "%s.log" % model_name
+log_file = "/Users/fl/github/tvm_tutorial/how_to_guides/autotvm/resnet-18.log"
 graph_opt_sch_file = "%s_graph_opt.log" % model_name
 
 # Set the input name of the graph
@@ -168,7 +172,9 @@ tuning_option = {
     "tuner": "random",
     "early_stopping": None,
     "measure_option": autotvm.measure_option(
+        # 在本机进行编译
         builder=autotvm.LocalBuilder(),
+        # 在本机运行生成的代码
         runner=autotvm.LocalRunner(
             number=1, repeat=10, min_repeat_ms=0, enable_cpu_cache_flush=True
         ),
