@@ -1,5 +1,9 @@
 ## 源码分析
 
+### 框架图
+![](./image/architecture_diagram.jpg)
+
+
 
 ### torch前端到tvm.IRModule
 ```
@@ -24,6 +28,7 @@
 
 [这篇文章写得很好，说得很清楚](https://blog.csdn.net/zx_ros/article/details/122931616)
 
+[参考](https://zhuanlan.zhihu.com/p/363991566)
 ### autotvm执行过程
 ```python
 调用流程：
@@ -88,6 +93,7 @@
 GridSearchTuner 也是一种调优器。继承关系：GridSearchTuner -> IndexBaseTuner -> Tuner
 发现继承的子类似乎都只有获取数据的逻辑，在进行调优的时候，实际上用的都是Tuner类中的tune方法，也就是说调优的逻辑是相同的，只是获取数据的方式不同，这点算是比较好理解。
 
+在看代码的时候，发现xgboost的cost model似乎并没有被使用。经过和老师讨论，认为应该是在使用遗传算法进行搜索时使用了cost model
 
 [参考](https://zhuanlan.zhihu.com/p/457722423)
 
