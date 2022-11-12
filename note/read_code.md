@@ -1,7 +1,7 @@
 ## 源码分析
 
 ### 框架图
-![](./image/architecture_diagram.jpg)
+![](../image/read_code/architecture_diagram.jpg)
 
 
 
@@ -136,6 +136,11 @@ relay.build针对整个模型进行编译
 
 #### Build with Relay
 
+高层逻辑：
+1. 通过查询op注册表来查找op实现
+2. 为op生成计算表达式和调度
+3. 将op编译为目标代码
+
 relay.build()函数会进入python/tvm/relay/build_module.py，首先判断有没有autotvm预先tune好记录，然后构造tophub_context
 ```python
 if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):
@@ -197,62 +202,102 @@ void Build(IRModule mod, const Array<Target>& raw_targets, const tvm::Target& ta
     BuildRelay(std::move(mod), mod_name);
     }
 ```
+
+下面的 BuildRelay 是核心模块，做了如下工作
+1. 优化
+2. 计算图生成
+3. 后端代码生成
 ```c++
-void BuildRelay(IRModule relay_module, const String& mod_name) {
+  /*!
+   * \brief Compile a Relay IR module to runtime module.
+   *
+   * \param relay_module The Relay IR module.
+   * \param params The parameters.
+   */
+  void BuildRelay(IRModule relay_module, const String& mod_name) {
     // Relay IRModule -> IRModule optimizations.
     IRModule module = WithAttrs(
         relay_module, {{tvm::attr::kExecutor, executor_}, {tvm::attr::kRuntime, runtime_}});
+    // 优化
     relay_module = OptimizeImpl(std::move(module));
 
-    // Get the updated function and new IRModule to build.
-    // Instead of recreating the IRModule, we should look at the differences between this and the
-    // incoming IRModule to see if we can just pass (IRModule, Function) to the code generator.
+    // 获取更新的函数和新的 IRModule 来构建。
+    // 与其重新创建 IRModule，不如查看它与传入的 IRModule 之间的区别，
+    // 看看我们是否可以将 (IRModule, Function) 传递给代码生成器。
     Function func = Downcast<Function>(relay_module->Lookup("main"));
     IRModule func_module = WithAttrs(IRModule::FromExpr(func),
                                      {{tvm::attr::kExecutor, executor_},
                                       {tvm::attr::kRuntime, runtime_},
                                       {tvm::attr::kWorkspaceMemoryPools, workspace_memory_pools_},
                                       {tvm::attr::kConstantMemoryPools, constant_memory_pools_}});
-    ...
-}
+
+    // Generate code for the updated function.
+    // 计算图生成。判断是生成 GraphCodegen 还是 AOTCodegen
+    executor_codegen_ = MakeExecutorCodegen(executor_->name);
+    executor_codegen_->Init(nullptr, config_->primitive_targets);
+    executor_codegen_->Codegen(func_module, func, mod_name);
+    executor_codegen_->UpdateOutput(&ret_);
+    ret_.params = executor_codegen_->GetParams();
+
+    auto lowered_funcs = executor_codegen_->GetIRModule();
+
+    // No need to build for external functions.
+    Target ext_dev("ext_dev");
+    if (lowered_funcs.find(ext_dev) != lowered_funcs.end()) {
+      lowered_funcs.Set(ext_dev, IRModule());
+    }
+
+    const Target& host_target = config_->host_virtual_device->target;
+    const runtime::PackedFunc* pf = runtime::Registry::Get("codegen.LLVMModuleCreate");
+    // When there is no lowered_funcs due to reasons such as optimization.
+    if (lowered_funcs.size() == 0) {
+      if (host_target->kind->name == "llvm") {
+        CHECK(pf != nullptr) << "Unable to create empty module for llvm without llvm codegen.";
+        // If we can decide the target is LLVM, we then create an empty LLVM module.
+        ret_.mod = (*pf)(host_target->str(), "empty_module");
+      } else {
+        // If we cannot decide the target is LLVM, we create an empty CSourceModule.
+        // The code content is initialized with ";" to prevent complaining
+        // from CSourceModuleNode::SaveToFile.
+        ret_.mod = tvm::codegen::CSourceModuleCreate(";", "", Array<String>{});
+      }
+    } else {
+      ret_.mod = tvm::TIRToRuntime(lowered_funcs, host_target);
+    }
+
+    auto ext_mods = executor_codegen_->GetExternalModules();
+    ret_.mod = tvm::codegen::CreateMetadataModule(ret_.params, ret_.mod, ext_mods, host_target,
+                                                  runtime_, executor_,
+                                                  executor_codegen_->GetExecutorCodegenMetadata());
+    // Remove external params which were stored in metadata module.
+    for (tvm::runtime::Module mod : ext_mods) {
+      auto pf_var = mod.GetFunction("get_const_vars");
+      if (pf_var != nullptr) {
+        Array<String> variables = pf_var();
+        for (size_t i = 0; i < variables.size(); i++) {
+          auto it = ret_.params.find(variables[i].operator std::string());
+          if (it != ret_.params.end()) {
+            VLOG(1) << "constant '" << variables[i] << "' has been captured in external module";
+            ret_.params.erase(it);
+          }
+        }
+      }
+    }
+  }
 ```
-
-在 build_module.py 中还会调用 bld_mod.build()函数
-```python
-bld_mod = BuildModule()
-graph_json, runtime_mod, params = bld_mod.build(
-    mod=ir_mod,
-    target=raw_targets,
-    params=params,
-    executor=executor,
-    runtime=runtime,
-    workspace_memory_pools=workspace_memory_pools,
-    constant_memory_pools=constant_memory_pools,
-    mod_name=mod_name,
-)
-```
-
-bld_mod.build()函数往下走会调用 self._build() 函数。
-**在里面还有一个发现，居然有一个 meta_schedule 选项，不知道是不是之前说的那个 meta schedule**
-```python
-self._build(
-    mod,
-    target,
-    target_host,
-    executor,
-    runtime,
-    workspace_memory_pools,
-    constant_memory_pools,
-    mod_name,
-)
-```
-
-
-
-经过多番跳转，终于到达build的核心模块，再来看TVM逐步做的工作
 
 1. 优化
-设备无关的优化
+优化Optimize，可以看到这里的优化主要是设备无关的优化，是graph-level的针对tensor运算的优化。不断往pass_seqs里面塞各种优化pass。
+比如：
+去除公共子表达式：EliminateCommonSubexpr
+分支卷积优化：CombineParallelConv2D
+常量传播优化：...
+规范化：将一些特殊运算转换成等价的常规算子运算，主要就是bias_add 转换为 expand_dim + broadcast_add
+layout 变换和常量传播
+图融合优化
+图融合优化。其优化内容几乎与 NNVM 一样，都是基于算子的 pattern (kElemWise, kBroadcast,kInjective, kCommReduce, kOutEWiseFusable, kOpaque)和融合规则 rule (kUknown, kFuseToMaster, kRealize)来运行融合算法的，可以参考一篇关于NNVM的文章，这里不再赘述。
+
+
 ```c++
 // BuildRelay 中的 relay_module = OptimizeImpl(std::move(module));
 IRModule OptimizeImpl(IRModule relay_module) {
@@ -303,6 +348,7 @@ IRModule OptimizeImpl(IRModule relay_module) {
         relay_module = transform::FuseOps()(relay_module);
       }
     }
+    // do layout rewrite for metaschedule
     if (backend::IsMetaScheduleEnabled() && config_->optional_homogeneous_target.defined()) {
       Pass major_pass = transform::MetaScheduleLayoutRewrite();
       bool enable_layout_rewrite_targets =
@@ -339,7 +385,256 @@ IRModule OptimizeImpl(IRModule relay_module) {
 
 2. 计算图生成
 
-python 的 build_module.py 中有
+``BuildRelay`` 函数中有下面几行代码
+
+```c++
+    // Generate code for the updated function.
+    // 计算图生成。判断是生成 GraphCodegen 还是 AOTCodegen
+    executor_codegen_ = MakeExecutorCodegen(executor_->name);
+    executor_codegen_->Init(nullptr, config_->primitive_targets);
+    executor_codegen_->Codegen(func_module, func, mod_name);
+```
+
+``executor_codegen`` 的类型可能是 ``GraphCodegen`` 也可能是 ``AOTCodegen``
+
+下面按照 GraphCodegen 的类型进行分析
+
+调用 ``executor_codegen_->Codegen(func_module, func, mod_name);`` -> ``ExecutorCodegen::Codegen`` -> ``relay.build_module._GraphExecutorCodegen`` -> ``CreateGraphCodegenMod`` -> ``GraphExecutorCodegenModule`` 
+
+下面给出 ``GraphExecutorCodegenModule`` 的代码
+
+```c++
+class GraphExecutorCodegenModule : public runtime::ModuleNode {
+ public:
+  GraphExecutorCodegenModule() {}
+  virtual PackedFunc GetFunction(const std::string& name, const ObjectPtr<Object>& sptr_to_self) {
+    if (name == "init") {
+      return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
+        ICHECK_EQ(args.num_args, 2) << "The expected of arguments are: "
+                                    << "runtime::Module mod and Array<Target> targets";
+        void* mod = args[0];
+        Array<Target> targets = args[1];
+        codegen_ = std::make_shared<GraphExecutorCodegen>(reinterpret_cast<runtime::Module*>(mod),
+                                                          std::move(targets));
+      });
+    } else if (name == "codegen") {
+      // 在这里进行调用
+      return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
+        IRModule mod = args[0];
+        Function func = args[1];
+        String mod_name = args[2];
+        this->output_ = this->codegen_->Codegen(mod, func, mod_name);
+      });
+    } 
+    ...
+  }
+
+  const char* type_key() const final { return "RelayGraphExecutorCodegenModule"; }
+
+ private:
+  std::shared_ptr<GraphExecutorCodegen> codegen_;
+  LoweredOutput output_;
+};
+```
+
+继续看 Codegen 的具体实现
+
+遍历 relay::Function func，然后生成计算图。
+
+内存分配：由函数relay.backend.GraphPlanMemory实现；src/relay/backend/graph_plan_memory.cc
+
+VisitExpr对节点进行遍历并进行节点信息的记录。
+
+LowerExternalfunctions完成ir节点到tir节点的转化以及schedule的优化。
+
+[细节参考](https://zhuanlan.zhihu.com/p/339566528)
+```c++
+LoweredOutput Codegen(IRModule mod, relay::Function func, String mod_name) {
+    mod_name_ = mod_name;
+    memory_plan_ = GraphPlanMemory(func);
+    backend::FunctionInfo func_info;
+    if (memory_plan_.defined()) {
+      func_info =
+          relay::tec::UpdateMainWorkspaceSize(mod, config_, memory_plan_->expr_to_storage_info);
+      mod = WithAttr(mod, "main_func_info", func_info);
+    }
+    IRModule lowered_mod = tec::LowerTE(mod_name_, config_, [this](BaseFunc func) {
+      // We need to maintain the constant map for external
+      // functions so we pass this processing function which
+      // allows us to process each function as we lower it.
+      if (func->GetAttr<String>(attr::kCompiler).defined()) {
+        UpdateConstants(func, &params_);
+      }
+      tec::UpdateFunctionMetadata(func, this->function_metadata_);
+    })(mod);
+
+    Optional<backend::FunctionInfo> main_func_info =
+        lowered_mod->GetAttr<backend::FunctionInfo>("main_func_info");
+
+    function_metadata_.Set(runtime::symbol::tvm_module_main, main_func_info.value());
+    Function lowered_main_func = Downcast<Function>(lowered_mod->Lookup("main"));
+
+    // Now that we have lowered all operators to TIR code, we can proceed with compilation.
+    // We need to unfortunately re-plan as the previous results have been invalidated by lowering
+    // we will fix this in future refactors.
+    memory_plan_ = GraphPlanMemory(lowered_main_func);
+    // The graph planner also can not handle planning calls to global variables to we must remap
+    // First we convert all the parameters into input nodes.
+    for (auto param : lowered_main_func->params) {
+      auto node_ptr = GraphInputNode::make_node_ptr(param->name_hint(), GraphAttrs());
+      var_map_[param.get()] = AddNode(node_ptr, param);
+    }
+    heads_ = VisitExpr(lowered_main_func->body);
+    std::ostringstream os;
+
+    dmlc::JSONWriter writer(&os);
+    GetJSON(&writer);
+    LoweredOutput ret;
+    ret.graph_json = os.str();
+
+    // Collect any runtime modules generated by external codegen.
+    ret.external_mods =
+        lowered_mod->GetAttr<Array<runtime::Module>>(tvm::attr::kExternalMods).value_or({});
+
+    // Collect any constants extracted by external codegen.
+    ret.params = std::unordered_map<std::string, tvm::runtime::NDArray>();
+    Map<String, runtime::NDArray> const_name_to_constant =
+        lowered_mod->GetAttr<Map<String, runtime::NDArray>>(tvm::attr::kConstNameToConstant)
+            .value_or({});
+    for (const auto& kv : const_name_to_constant) {
+      VLOG(1) << "constant '" << kv.first << "' contributed by external codegen";
+      ICHECK(ret.params.emplace(kv.first, kv.second).second);
+    }
+
+    // Collect any constants extracted during lowering.
+    for (const auto& kv : params_) {
+      VLOG(1) << "constant '" << kv.first << "' contributed by TECompiler";
+      ICHECK(ret.params.emplace(kv.first, kv.second).second);
+    }
+
+    ret.function_metadata = std::move(function_metadata_);
+
+    // This is the point where we separate the functions in the module by target
+    ret.lowered_funcs = tec::GetPerTargetModules(lowered_mod);
+    ret.metadata =
+        ExecutorCodegenMetadata({} /* inputs */, {} /* input_tensor_types */, {} /* outputs */,
+                                {} /* output_tensor_types */, {} /* pools */, {} /* devices */,
+                                runtime::kTvmExecutorGraph /* executor */, mod_name_ /* mod_name */,
+                                "packed" /* interface_api */, Bool(false) /* unpacked_api */);
+    return ret;
+  }
+```
+
+
+3. 后端代码生成
+
+Relay得到lower后的函数，将做后端代码生成，跳转到src/driver/driver_api.cc中的TIRToRuntime函数（注意这里重载了多种实现），然后跳转到核心build，这里的build函数支持异构编译，需要在inputs划分好不同硬件设施。
+（其实不是很清楚怎么跳转到这个函数的）
+
+```c++
+runtime::Module TIRToRuntime(const Map<Target, IRModule>& inputs_arg,
+                             const Target& target_host_arg) {
+  auto pass_ctx = transform::PassContext::Current();
+
+  std::vector<runtime::Module> device_modules;
+  Map<Target, IRModule> inputs = inputs_arg;
+  Target target_host = target_host_arg;
+
+  // Fetch previous defined target host in targets
+  CheckAndUpdateHostConsistency(&inputs, &target_host);
+
+  if (!target_host.defined()) {
+    for (const auto& it : inputs) {
+      if (it.first->kind->device_type == kDLCPU || it.first->kind->device_type == kDLMicroDev) {
+        target_host = it.first;
+        break;
+      }
+    }
+  }
+
+  if (!target_host.defined()) {
+    target_host = DefaultTargetHost(target_host);
+  }
+
+  // Update target host for all targets
+  CheckAndUpdateHostConsistency(&inputs, &target_host);
+
+  // Take the attrs from the first module so the eventual modules have them.
+  // Ideally this would just be one unified module all the way through;
+  IRModule first_module = (*inputs.begin()).second;
+  IRModule mhost_all = IRModule(Map<GlobalVar, BaseFunc>(), {}, {}, {}, first_module->attrs);
+
+  ICHECK(mhost_all.defined()) << "The host module must be defined";
+
+  for (const auto& it : inputs) {
+    if (it.second.defined()) {
+      const Target& target = it.first;
+      const IRModule& ir_module = it.second;
+      auto pair = SplitMixedModule(ir_module, target, target_host);
+      auto& host_mod = pair.first;
+      auto& device_mod = pair.second;
+
+      ICHECK(host_mod.defined()) << "The split host module must be defined";
+
+      ICHECK(mhost_all.defined()) << "The host module must be defined";
+
+      // We don't want library modules going back into host codegen
+      // unless they're supposed to. Here if we overrode the target host
+      // to allow lowering previously we check that it's meant to be placed
+      // back into the host Module.
+      bool overrides_host_target = target->kind->device_type == target_host->kind->device_type;
+      bool non_host_target_kind = target->kind != target_host->kind;
+      if (overrides_host_target && non_host_target_kind) {
+        device_modules.push_back(codegen::Build(host_mod, it.first));
+      } else {
+        mhost_all->Update(host_mod);
+      }
+
+      if (device_mod->functions.size() != 0) {
+        device_modules.push_back(codegen::Build(device_mod, it.first));
+      }
+    }
+  }
+
+  runtime::Module mhost = codegen::Build(mhost_all, target_host);
+  for (const auto& it : device_modules) {
+    if (it.operator->()) {
+      mhost.Import(it);
+    }
+  }
+
+  return mhost;
+}
+```
+
+当中最最核心的则是mhost = codegen::Build，最后跳转过去就开始调用代码生成模块了（src/target/codegen.cc）。
+
+```c++
+runtime::Module Build(IRModule mod, Target target) {
+  if (transform::PassContext::Current()
+          ->GetConfig<Bool>("tir.disable_assert", Bool(false))
+          .value()) {
+    mod = tir::transform::SkipAssert()(mod);
+  }
+
+  auto target_attr_map = tvm::TargetKind::GetAttrMap<FTVMTIRToRuntime>("TIRToRuntime");
+  if (target_attr_map.count(target->kind)) {
+    return target_attr_map[target->kind](mod, target);
+  }
+
+  // the build function.
+  std::string build_f_name = "target.build." + target->kind->name;
+  const PackedFunc* bf = runtime::Registry::Get(build_f_name);
+  ICHECK(bf != nullptr) << build_f_name << " is not enabled";
+  return (*bf)(mod, target);
+}
+```
+
+[参考](https://zhuanlan.zhihu.com/p/381691430)
+
+4. python
+
+c++ 中的代码跑完了后，继续回到 python 的 build_module.py 中
 ```python
 elif executor.name == "graph":
     executor_factory = _executor_factory.GraphExecutorFactoryModule(
@@ -407,4 +702,35 @@ GraphExecutorFactory::GraphExecutorFactory(
   params_ = params;
   module_name_ = module_name;
 }
+```
+
+<!--  -->
+在 build_module.py 中还会调用 bld_mod.build()函数
+```python
+bld_mod = BuildModule()
+graph_json, runtime_mod, params = bld_mod.build(
+    mod=ir_mod,
+    target=raw_targets,
+    params=params,
+    executor=executor,
+    runtime=runtime,
+    workspace_memory_pools=workspace_memory_pools,
+    constant_memory_pools=constant_memory_pools,
+    mod_name=mod_name,
+)
+```
+
+bld_mod.build()函数往下走会调用 self._build() 函数。
+**在里面还有一个发现，居然有一个 meta_schedule 选项，不知道是不是之前说的那个 meta schedule**
+```python
+self._build(
+    mod,
+    target,
+    target_host,
+    executor,
+    runtime,
+    workspace_memory_pools,
+    constant_memory_pools,
+    mod_name,
+)
 ```
