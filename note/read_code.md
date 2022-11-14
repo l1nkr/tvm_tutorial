@@ -2,7 +2,7 @@
 
 ### 框架图
 ![](../image/read_code/architecture_diagram.jpg)
-
+![](../image/read_code/pipeline.jpg)
 
 
 ### torch前端到tvm.IRModule
@@ -40,7 +40,7 @@
       2.1.2.1(调用链)->select_implementation
         2.1.2.1.1 get_valid_implementations(通过FTVMStrategy找到实现)
         2.1.2.1.2 fcompute -> register_topi_compute
-          2.1.2.1.2.1 _register_task_compute(函数添加到TASK_TABLE中)
+          2.1.2.1.2.1 _register_task_compute(函数添加到TASK_TABLE中，生成了template)
           2.1.2.1.2.2 TaskExtractEnv.add_task(添加task)
   2.2 create(填充task信息)
     2.2.1 ApplyConfig(config_space)(设定默认config，用于记录解空间) && Task.func -> fcompute && fschedule(记录所有可能解)
