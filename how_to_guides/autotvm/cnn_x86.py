@@ -111,6 +111,7 @@ def tune_and_evaluate(tuning_opt):
     mod, params, data_shape, out_shape = get_network(model_name, batch_size)
     # 首先需要提取tasks，确定哪些计算内核需要被优化
     # 就我的猜测来说，这个地方应该和前端转换的目标类似，都是为了拿到relay ir。
+    # 参数ops指定需要调优的算子
     tasks = autotvm.task.extract_from_program(
         mod["main"], target=target, params=params, ops=(relay.op.get("nn.conv2d"),)
     )
@@ -161,8 +162,6 @@ graph_opt_sch_file = "%s_graph_opt.log" % model_name
 # For ONNX models, it is typically "0".
 input_name = "data"
 
-# Set number of threads used for tuning based on the number of
-# physical CPU cores on your machine.
 num_threads = 4
 os.environ["TVM_NUM_THREADS"] = str(num_threads)
 
@@ -172,15 +171,14 @@ tuning_option = {
     "tuner": "random",
     "early_stopping": None,
     "measure_option": autotvm.measure_option(
-        # 在本机进行编译
+        # Run compilation on local machine
         builder=autotvm.LocalBuilder(),
-        # 在本机运行生成的代码
+        # Run generated code on local devices.
         runner=autotvm.LocalRunner(
-            number=1, repeat=10, min_repeat_ms=0, enable_cpu_cache_flush=True
+            number=10, repeat=1, min_repeat_ms=0, enable_cpu_cache_flush=True
         ),
     ),
 }
-# We do not run the tuning in our webpage server since it takes too long.
-# Uncomment the following line to run it by yourself.
+
 
 tune_and_evaluate(tuning_option)

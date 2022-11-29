@@ -81,6 +81,33 @@ def get_network(name, batch_size, layout="NHWC", dtype="float32", use_sparse=Fal
 
     return mod, params, input_shape, output_shape
 
+def run_tuning():
+    print("Begin tuning...")
+    tuner = auto_scheduler.TaskScheduler(tasks, task_weights)
+    # num_measure_trials is the number of measurement trials we can use during the tuning
+    
+    tune_option = auto_scheduler.TuningOptions(
+        num_measure_trials=200,  # change this to 20000 to achieve the best performance
+        runner=auto_scheduler.LocalRunner(repeat=10, enable_cpu_cache_flush=True),
+        measure_callbacks=[auto_scheduler.RecordToFile(log_file)],
+    )
+
+    if use_sparse:
+        from tvm.topi.sparse.utils import sparse_sketch_rules
+
+        search_policy = [
+            auto_scheduler.SketchPolicy(
+                task,
+                program_cost_model=auto_scheduler.XGBModel(),
+                init_search_callbacks=sparse_sketch_rules(),
+            )
+            for task in tasks
+        ]
+
+        tuner.tune(tune_option, search_policy=search_policy)
+    else:
+        tuner.tune(tune_option)
+
 
 # Define the neural network and compilation target.
 # If the target machine supports avx512 instructions, replace the
@@ -115,33 +142,6 @@ for idx, task in enumerate(tasks):
 
 
 # begin tuning
-def run_tuning():
-    print("Begin tuning...")
-    tuner = auto_scheduler.TaskScheduler(tasks, task_weights)
-    # num_measure_trials is the number of measurement trials we can use during the tuning
-    
-    tune_option = auto_scheduler.TuningOptions(
-        num_measure_trials=200,  # change this to 20000 to achieve the best performance
-        runner=auto_scheduler.LocalRunner(repeat=10, enable_cpu_cache_flush=True),
-        measure_callbacks=[auto_scheduler.RecordToFile(log_file)],
-    )
-
-    if use_sparse:
-        from tvm.topi.sparse.utils import sparse_sketch_rules
-
-        search_policy = [
-            auto_scheduler.SketchPolicy(
-                task,
-                program_cost_model=auto_scheduler.XGBModel(),
-                init_search_callbacks=sparse_sketch_rules(),
-            )
-            for task in tasks
-        ]
-
-        tuner.tune(tune_option, search_policy=search_policy)
-    else:
-        tuner.tune(tune_option)
-        
 run_tuning()
 
 # compile and evaluate

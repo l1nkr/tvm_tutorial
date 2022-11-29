@@ -103,8 +103,11 @@ def tune_and_evaluate(tuning_opt):
     print("Extract tasks...")
     mod, params, input_shape, out_shape = get_network(network, batch_size=1)
     tasks = autotvm.task.extract_from_program(
-        mod["main"], target=target, params=params, ops=(relay.op.get("nn.conv2d"),)
+        mod["main"], target=target, params=params
     )
+    # tasks = autotvm.task.extract_from_program(
+    #     mod["main"], target=target, params=params, ops=(relay.op.get("nn.conv2d"),)
+    # )
 
     # run tuning tasks
     print("Tuning...")
@@ -127,18 +130,12 @@ def tune_and_evaluate(tuning_opt):
         print(module.benchmark(dev, number=1, repeat=600))
 
 
-# We do not run the tuning in our webpage server since it takes too long.
-# Uncomment the following line to run it by yourself.
-
-# tune_and_evaluate(tuning_option)
-
-
 #### DEVICE CONFIG ####
 target = tvm.target.cuda()
 
 #### TUNING OPTION ####
 network = "resnet-18"
-log_file = "%s.log" % network
+log_file = "%s_gpu.log" % network
 dtype = "float32"
 
 tuning_option = {
@@ -151,3 +148,5 @@ tuning_option = {
         runner=autotvm.LocalRunner(number=20, repeat=3, timeout=4, min_repeat_ms=150),
     ),
 }
+
+tune_and_evaluate(tuning_option)
