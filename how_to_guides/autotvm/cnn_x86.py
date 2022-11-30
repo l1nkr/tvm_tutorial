@@ -8,6 +8,8 @@ from tvm.autotvm.tuner import XGBTuner, GATuner, RandomTuner, GridSearchTuner
 from tvm.autotvm.graph_tuner import DPTuner, PBQPTuner
 import tvm.contrib.graph_executor as runtime
 
+import pdb
+
 def get_network(name, batch_size):
     """Get the symbol definition and random weight of a network"""
     input_shape = (batch_size, 3, 224, 224)
@@ -112,13 +114,13 @@ def tune_and_evaluate(tuning_opt):
     # 首先需要提取tasks，确定哪些计算内核需要被优化
     # 就我的猜测来说，这个地方应该和前端转换的目标类似，都是为了拿到relay ir。
     # 参数ops指定需要调优的算子
-    tasks = autotvm.task.extract_from_program(
-        mod["main"], target=target, params=params, ops=(relay.op.get("nn.conv2d"),)
-    )
+    # tasks = autotvm.task.extract_from_program(
+    #     mod["main"], target=target, params=params, ops=(relay.op.get("nn.conv2d"),)
+    # )
 
     # run tuning tasks
-    tune_kernels(tasks, **tuning_opt)
-    tune_graph(mod["main"], data_shape, log_file, graph_opt_sch_file)
+    # tune_kernels(tasks, **tuning_opt)
+    # tune_graph(mod["main"], data_shape, log_file, graph_opt_sch_file)
 
     # compile kernels in default mode
     # print("Evaluation of the network compiled in 'default' mode without auto tune:")
@@ -132,6 +134,7 @@ def tune_and_evaluate(tuning_opt):
     with autotvm.apply_history_best(log_file):
         print("Compile...")
         with tvm.transform.PassContext(opt_level=3):
+            pdb.set_trace()
             lib = relay.build(mod, target=target, params=params)
         evaluate_performance(lib, data_shape)
 
