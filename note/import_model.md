@@ -170,7 +170,8 @@ def _parse_graph_input(self, graph):
 ```
 
 调用_check_for_unsupported_ops检查当前的onnx网络中所有算子是不是都能转换为tvm relay ir 
-convert_map
+
+关于convert_map具体可以看 [converted_node](./converted_node.md)
 ![](../image/frontend/convert_map.jpg)
 
 ```python
