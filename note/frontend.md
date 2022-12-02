@@ -5,9 +5,13 @@ ONNX规范由以下几个部分组成：
 - 标准数据类型。包括张量（tensors）、序列（sequences）和映射（maps）。
 
 ONNX使用protobuf序列化AI模型
+
 顶层是一个模型（Model）结构，主要由关联的元数据和一个图（Graph）组成；-> 
+
 图由元数据、模型参数、输入输出、和计算节点（Node）序列组成，这些节点构成了一个计算无环图 -> 
+
 每一个计算节点代表了一次操作符的调用，由节点名称、操作符、输入列表、输出列表和属性列表组成 ->
+
 属性列表主要记录了一些运行时常量，比如模型训练时生成的系数值。
 
 - **ModelProto**：加载了一个onnx模型之后获得的就是一个ModelProto，它包含了一些版本信息，生产者信息和一个GraphProto。
@@ -83,23 +87,8 @@ GraphProto.from_onnx的参数有onnx模型的TVM GraphProto实例、版本信息
         self._check_for_unsupported_ops(graph)
         self._construct_nodes(graph)
 
-        # now return the outputs
-        outputs = [self._nodes[self._parse_value_proto(i)] for i in graph.output]
-        outputs = outputs[0] if len(outputs) == 1 else _expr.Tuple(outputs)
-        # If requested, directly return the converted expressions.
-        if get_output_expr:
-            return outputs
-        ## Maintain the order of inputs and parameters from the ONNX graph, but only include
-        ## those parameters that are needed to execute the relay graph
-        free_vars = analysis.free_vars(outputs)
-        nodes = {v: k for k, v in self._nodes.items()}
-        free_vars = [nodes[var] for var in free_vars]
-        for i_name in self._params:
-            if i_name in free_vars and i_name not in self._inputs:
-                self._inputs[i_name] = self._nodes[i_name]
-        # Create a function from our output expression and all input variables.
-        func = _function.Function([v for k, v in self._inputs.items()], outputs)
-        return IRModule.from_expr(func), self._params
+        ...
+
 ```
 
 from_onnx中，首先调用_parse_graph_initializers从onnx模型的initializer数据段中解析转换网络权重数据：
@@ -208,75 +197,145 @@ def _check_for_unsupported_ops(self, graph):
 
 然后调用_construct_nodes函数，解析onnx网络的各个节点以及节点连接关系，在tvm中创建网络的DAG（有向无环图） 
 
+代码中调用_convert_operator将onnx算子转换为tvm relay ir。（前面_get_convert_map得到的是各个onnx算子的转换接口，接口执行后得到的才是tvm relay ir）。详细的转换流程见onnx到tvm relay ir的转换。
+
+每个node具体长什么样子
+![](../image/frontend/node.jpg)
+节点输入
+![](../image/frontend/node_inputs.jpg)
+
 ```python
 def _construct_nodes(self, graph):
-        """Nodes are stored as directed acyclic graph."""
-        # 遍历onnx模型的每一个节点
-        for node in graph.node:
-            # 算子名称不是节点名称
-            op_name = node.op_type
-            # 解析节点属性
-            attr = self._parse_attr(node.attribute)
-            # Create and populate input list.
-            inputs = onnx_input()
-            # 获取节点的所有输入
-            for i in node.input:
-                if i != "":
-                    inputs.append(self._nodes[self._renames.get(i, i)])
+    """Nodes are stored as directed acyclic graph."""
+    # 遍历onnx模型的每一个节点
+    for node in graph.node:
+        # 这里是算子名称而不是节点名称
+        op_name = node.op_type
+        # 解析节点属性
+        attr = self._parse_attr(node.attribute)
+        # Create and populate input list.
+        inputs = onnx_input()
+        # 获取节点的所有输入
+        for i in node.input:
+            if i != "":
+                inputs.append(self._nodes[self._renames.get(i, i)])
+            else:
+                inputs.append(None)
+        i_name = self._parse_value_proto(node)
+        # 获取节点的输出
+        node_output = self._fix_outputs(op_name, node.output)
+        attr["tvm_custom"] = {}
+        attr["tvm_custom"]["name"] = i_name
+        attr["tvm_custom"]["num_outputs"] = len(node_output)
+        # 将当前 onnx 节点转化为 tvm relay ir
+        op = self._convert_operator(op_name, inputs, attr, self.opset)
+        if not isinstance(op, _expr.TupleWrapper):
+            outputs_num = 1
+        else:
+            outputs_num = len(op)
+
+        if outputs_num == 1:
+            op = fold_constant(op)
+        else:
+            op = _expr.TupleWrapper(fold_constant(op.astuple()), len(op))
+
+        if outputs_num > 1:
+            # ONNX supports optional outputs for some nodes.
+            # This block searches for missing outputs in the ONNX graph
+            # and removes any unneeded ops
+            # onnx 支持一个节点有多个输出，但是有些输出可能并没有使用，
+            # 在转换为 relay ir 的时候，要将这些输出剔除掉。
+            # 具体做法是，获取节点的有效输出，如果输出没有名字，
+            # 那么认为这个输出没有被（自己或者其他节点）使用，属于无效输出
+            valid_outputs = [False] * outputs_num
+            for i, output in enumerate(node_output):
+                if output != "":
+                    valid_outputs[i] = True
+            # If we have outputs ONNX isn't expecting, we need to drop them
+            # 如果存在无效输出
+            if not all(valid_outputs):
+                # 这里op为转换后的relay表示
+                tup = op.astuple()
+                # TupleWrapper can also wrap ops with TupleType outputs
+                # 将有效输出挑选出来，组成当前节点的实际输出
+                if isinstance(tup, _expr.Tuple):
+                    # For tuples, we extract the fields instead of using GetTupleItem
+                    outputs = [tup.fields[i] for i, valid in enumerate(valid_outputs) if valid]
                 else:
-                    inputs.append(None)
-            i_name = self._parse_value_proto(node)
-            node_output = self._fix_outputs(op_name, node.output)
-            attr["tvm_custom"] = {}
-            attr["tvm_custom"]["name"] = i_name
-            attr["tvm_custom"]["num_outputs"] = len(node_output)
+                    # For call nodes, we need to GetTupleItem
+                    outputs = [op[i] for i, valid in enumerate(valid_outputs) if valid]
+                # Create the new op with valid outputs
+                if len(outputs) == 1:
+                    op = outputs[0]
+                # 如果存在无效输出，那么当前节点的 relay ir 需要重新生成
+                elif len(outputs) != outputs_num:
+                    op = _expr.TupleWrapper(_expr.Tuple(outputs), len(outputs))
+                # Drop invalid outputs for the onnx node
+                # 更新onnx节点的输出表
+                outputs_num = len(outputs)
+                node_output = [output for output in node_output if output != ""]
+        assert (
+            len(node_output) == outputs_num
+        ), "Number of output mismatch {} vs {} in {}.".format(
+            len(node_output), outputs_num, op_name
+        )
+        # 将节点的值加入节点表，节点的值为节点的tvm表示
+        if outputs_num == 1:
+            self._nodes[node_output[0]] = op
+        else:
+            for k, i in zip(list(node_output), range(len(node_output))):
+                self._nodes[k] = op[i]
+```
 
-            op = self._convert_operator(op_name, inputs, attr, self.opset)
-            if not isinstance(op, _expr.TupleWrapper):
-                outputs_num = 1
-            else:
-                outputs_num = len(op)
+graph.output是onnx模型的输出，是一个onnx ValueInfoProto数组。
+_parse_vale_proto(i)返回输出i的名字。而当前self._nodes中是每个节点的输出的tvm relay ir
+outputs返回了网络所有输出节点的tvm relay ir。
 
-            if outputs_num == 1:
-                op = fold_constant(op)
-            else:
-                op = _expr.TupleWrapper(fold_constant(op.astuple()), len(op))
+这里代码第一行的outputs得到的就是整个网络的tvm relay ir。第二行将其打包为一个tuple
 
-            if outputs_num > 1:
-                # ONNX supports optional outputs for some nodes.
-                # This block searches for missing outputs in the ONNX graph
-                # and removes any unneeded ops
-                valid_outputs = [False] * outputs_num
-                for i, output in enumerate(node_output):
-                    if output != "":
-                        valid_outputs[i] = True
-                # If we have outputs ONNX isn't expecting, we need to drop them
-                if not all(valid_outputs):
-                    tup = op.astuple()
-                    # TupleWrapper can also wrap ops with TupleType outputs
-                    if isinstance(tup, _expr.Tuple):
-                        # For tuples, we extract the fields instead of using GetTupleItem
-                        outputs = [tup.fields[i] for i, valid in enumerate(valid_outputs) if valid]
-                    else:
-                        # For call nodes, we need to GetTupleItem
-                        outputs = [op[i] for i, valid in enumerate(valid_outputs) if valid]
-                    # Create the new op with valid outputs
-                    if len(outputs) == 1:
-                        op = outputs[0]
-                    elif len(outputs) != outputs_num:
-                        op = _expr.TupleWrapper(_expr.Tuple(outputs), len(outputs))
-                    # Drop invalid outputs for the onnx node
-                    outputs_num = len(outputs)
-                    node_output = [output for output in node_output if output != ""]
-            assert (
-                len(node_output) == outputs_num
-            ), "Number of output mismatch {} vs {} in {}.".format(
-                len(node_output), outputs_num, op_name
-            )
+```python
+def from_onnx(self, graph, opset, get_output_expr=False):
+    
+    ...
 
-            if outputs_num == 1:
-                self._nodes[node_output[0]] = op
-            else:
-                for k, i in zip(list(node_output), range(len(node_output))):
-                    self._nodes[k] = op[i]
+    # now return the outputs
+    outputs = [self._nodes[self._parse_value_proto(i)] for i in graph.output]
+    outputs = outputs[0] if len(outputs) == 1 else _expr.Tuple(outputs)
+
+    ....
+```
+
+如果我们在调用GraphProto.from_onnx的时候传入的get_output_expr参数为true，那么模型转换就到此为止了，返回的是模型的tvm relay ir。
+
+1. 调用analysis.free_vars接口，采用post DFS算法，从网络的输出开始遍历网络的tvm relay ir，找到free变量（是什么东西？按照官方文档，应该是权重之类的）；
+
+2. 然后从节点表中获取这些fee变量对应的节点；
+
+3. 将这些节点加入网络的输入表_inputs中；
+
+4. 调用_function.Function，传入网络的输入，参数和转换后的网络表示，得到_func；
+
+5. 最后返回网络的tvm表达和权重参数
+
+
+```python
+def from_onnx(self, graph, opset, get_output_expr=False):
+    
+    ...
+    # If requested, directly return the converted expressions.
+    if get_output_expr:
+        return outputs
+    ## Maintain the order of inputs and parameters from the ONNX graph, but only include
+    ## those parameters that are needed to execute the relay graph
+    # 详情见 c++ 代码
+    free_vars = analysis.free_vars(outputs)
+    nodes = {v: k for k, v in self._nodes.items()}
+    free_vars = [nodes[var] for var in free_vars]
+    for i_name in self._params:
+        if i_name in free_vars and i_name not in self._inputs:
+            self._inputs[i_name] = self._nodes[i_name]
+    # Create a function from our output expression and all input variables.
+    func = _function.Function([v for k, v in self._inputs.items()], outputs)
+    # 详情见 c++ 代码
+    return IRModule.from_expr(func), self._params
 ```
