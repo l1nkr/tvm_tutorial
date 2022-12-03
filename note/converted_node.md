@@ -397,3 +397,16 @@ def get_relay_op(op_name):
         raise tvm.error.OpNotImplemented("Unable to map op_name {} to relay".format(op_name))
     return op
 ```
+
+[refer](https://blog.csdn.net/zx_ros/article/details/122917673)
+[关于c++部分的代码讲解](https://blog.csdn.net/zx_ros/article/details/123130815)
+[关于c++部分的代码讲解](./register_op.md)
+
+1. 当tvm中实现一个算子时，会调用 RELAY_REGISTER_OP进行注册；
+
+2. 该注册会在 AttrRegistry<OpRegEntry, Op>（这是个单例模式的类）的entry_map_中加入一个OpRegEntry实例；
+
+3. 而tvm处理一个外部输入的模型时，如果遇到这个算子，在Op::Get方法中从entry_map_表中读取对应的OpRegEntry实例：
+
+
+
