@@ -164,14 +164,15 @@ void Build(IRModule mod, const Array<Target>& raw_targets, const tvm::Target& ta
 */
 void BuildRelay(IRModule relay_module, const String& mod_name) {
   // Relay IRModule -> IRModule optimizations.
+  1. 对relay ir做优化,执行优化pass
   IRModule module = WithAttrs(
       relay_module, {{tvm::attr::kExecutor, executor_}, {tvm::attr::kRuntime, runtime_}});
-  // 优化
   relay_module = OptimizeImpl(std::move(module));
   
   // 获取更新的函数和新的 IRModule 来构建。
   // 与其重新创建 IRModule，不如查看它与传入的 IRModule 之间的区别，
   // 看看我们是否可以将 (IRModule, Function) 传递给代码生成器。
+  2. 希望对IRModule做增量编译,而不是全部重新编译
   Function func = Downcast<Function>(relay_module->Lookup("main"));
   IRModule func_module = WithAttrs(IRModule::FromExpr(func),
                                     {{tvm::attr::kExecutor, executor_},
@@ -181,10 +182,15 @@ void BuildRelay(IRModule relay_module, const String& mod_name) {
   
   // Generate code for the updated function.
   // 计算图生成。判断是生成 GraphCodegen 还是 AOTCodegen
+  3. 创建执行器对应的代码生成器
   executor_codegen_ = MakeExecutorCodegen(executor_->name);
+  4. 初始化代码生成器
   executor_codegen_->Init(nullptr, config_->primitive_targets);
+  5. 对找到的main函数生成代码
   executor_codegen_->Codegen(func_module, func, mod_name);
+  6. 更新输出
   executor_codegen_->UpdateOutput(&ret_);
+  7. 获取参数
   ret_.params = executor_codegen_->GetParams();
   
   auto lowered_funcs = executor_codegen_->GetIRModule();
@@ -210,6 +216,7 @@ void BuildRelay(IRModule relay_module, const String& mod_name) {
       ret_.mod = tvm::codegen::CSourceModuleCreate(";", "", Array<String>{});
     }
   } else {
+    8. 打包tir运行时
     ret_.mod = tvm::TIRToRuntime(lowered_funcs, host_target);
   }
   
@@ -221,6 +228,7 @@ void BuildRelay(IRModule relay_module, const String& mod_name) {
   for (tvm::runtime::Module mod : ext_mods) {
     auto pf_var = mod.GetFunction("get_const_vars");
     if (pf_var != nullptr) {
+      9. 删除常量
       Array<String> variables = pf_var();
       for (size_t i = 0; i < variables.size(); i++) {
         auto it = ret_.params.find(variables[i].operator std::string());
