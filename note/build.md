@@ -68,7 +68,10 @@ relay/transform包含了许多**图级别pass**
 
 #### 准备工作
 
-relay.build()函数会进入python/tvm/relay/build_module.py，首先判断有没有autotvm预先tune好记录，然后构造tophub_context
+relay.build()函数会进入python/tvm/relay/build_module.py，首先判断有没有autotvm预先tune好记录，然后构造tophub_context。
+
+TVM官方提供了一部分预先调好的优化参数，存放在一个缓冲目录中，如果你恰巧在对应设备上使用了对应的运算，那么就可以直接复用参数。一般来说，这些参数会存放在~/.tvm/tophub/下。文件里面说明了# This is the pre-tuned parameters for x86 cpu backend. TVM downloaded this during compilation
+
 
 ```python
 if isinstance(autotvm.DispatchContext.current, autotvm.FallbackContext):

@@ -24,6 +24,12 @@ static TSelf* Global() {
 
 using TSelf = AttrRegistry<EntryType, KeyType>;
 
+// 在RegisterOrGet中，先是在entry_map_表中查找key为name表项是否存在；
+// 如果存在，直接返回该表象的value；
+// 如果不存在，就new一个EntryType类型实例，
+// 然后用get获取类型指针（由entry_map_的定义倒推，eptr为EntryType*类型），
+// 将这个数据实例加入到entry_map_表和entries_表中。
+
 EntryType& RegisterOrGet(const String& name) {
     auto it = entry_map_.find(name);
     if (it != entry_map_.end()) return *it->second;
@@ -37,6 +43,14 @@ EntryType& RegisterOrGet(const String& name) {
 }
 
 ```
+
+综上所述，我们理下整个流程：
+
+1. 当tvm中实现一个算子时，会调用 RELAY_REGISTER_OP进行注册；
+
+2. 该注册会在 AttrRegistry<OpRegEntry, Op>（这是个单例模式的类）的entry_map_中加入一个OpRegEntry实例；
+
+3. 而tvm处理一个外部输入的模型时，如果遇到这个算子，在Op::Get方法中从entry_map_表中读取对应的OpRegEntry实例：
 
 TVM_REGISTER_OP执行时，每注册一个op，都会创建OpRegEntry数据结构的一个实例
 
@@ -156,3 +170,5 @@ private:
 ```
 
 [refer](https://zhuanlan.zhihu.com/p/369433448)
+[refer](https://blog.csdn.net/zx_ros/article/details/123130815)
+[refer](https://blog.csdn.net/zx_ros/article/details/123526147)
