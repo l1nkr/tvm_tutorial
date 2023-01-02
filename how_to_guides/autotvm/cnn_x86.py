@@ -114,13 +114,14 @@ def tune_and_evaluate(tuning_opt):
     # 首先需要提取tasks，确定哪些计算内核需要被优化
     # 就我的猜测来说，这个地方应该和前端转换的目标类似，都是为了拿到relay ir。
     # 参数ops指定需要调优的算子
-    # tasks = autotvm.task.extract_from_program(
-    #     mod["main"], target=target, params=params, ops=(relay.op.get("nn.conv2d"),)
-    # )
+    tasks = autotvm.task.extract_from_program(
+        mod["main"], target=target, params=params, ops=(relay.op.get("nn.conv2d"),)
+    )
 
     # run tuning tasks
-    # tune_kernels(tasks, **tuning_opt)
-    # tune_graph(mod["main"], data_shape, log_file, graph_opt_sch_file)
+    tune_kernels(tasks, **tuning_opt)
+    # tune 图为什么需要log_file呢？log_file是在算子调优的时候产生的呀，这里还需要用到上面的结果吗
+    tune_graph(mod["main"], data_shape, log_file, graph_opt_sch_file)
 
     # compile kernels in default mode
     # print("Evaluation of the network compiled in 'default' mode without auto tune:")

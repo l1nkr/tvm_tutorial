@@ -70,6 +70,7 @@ def matmul(N, L, M, dtype):
 
     ##### define space begin #####
     cfg = autotvm.get_config()
+    # num_outputs : the total number of axis after split (`int`).
     cfg.define_split("tile_y", y, num_outputs=2)
     cfg.define_split("tile_x", x, num_outputs=2)
     ##### define space end #####

@@ -135,7 +135,7 @@ def arrayPacking():
 
     evaluate_operation(s, [A, B, C], target=target, name="mmult", optimization="array packing", log=log)
 
-    # print(tvm.lower(s, [A, B, C], simple_mode=True))
+    print(tvm.lower(s, [A, B, C], simple_mode=True))
     
 def cache():
     k = te.reduce_axis((0, K), "k")
@@ -175,7 +175,7 @@ def cache():
     evaluate_operation(s, [A, B, C], target=target, name="mmult", optimization="block caching", log=log)
 
     # Here is the generated IR after write cache blocking.
-    # print(tvm.lower(s, [A, B, C], simple_mode=True))
+    print(tvm.lower(s, [A, B, C], simple_mode=True))
     
     
 use_TE()
