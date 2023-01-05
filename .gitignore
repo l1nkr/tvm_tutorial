@@ -1,5 +1,6 @@
 .vscode/
 .idea/
+workspace/
 
 model/
 user_tutorial/Compiling_and_Optimizing_a_Model_with_TVMC/model/

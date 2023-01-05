@@ -188,3 +188,25 @@ with autotvm.apply_history_best("matmul.log"):
 
 最后得到的log格式
 result: MeasureResult(costs=(0.0120379658,), error_no=MeasureErrorNo.NO_ERROR, all_cost=0.6942737102508545, timestamp=1672653690.186004)
+
+关于ansor生成的.json文件的解析，
+https://discuss.tvm.apache.org/t/explanation-of-autoscheduler-transform-steps/9512/3
+
+https://github.com/apache/tvm/blob/main/src/auto_scheduler/transform_step.cc
+
+https://github.com/apache/tvm/blob/main/src/auto_scheduler/measure_record.cc
+
+AN: AnnotationStep
+FU: FuseStep
+PR: PragmaStep
+RE: ReorderStep
+SP: SplitStep
+FSP: FollowSplitStep
+FFSP: FollowFusedSplitStep
+SA: StorageAlignStep
+CA: ComputeAtStep
+CI: ComputeInlineStep
+CR: ComputeRootStep
+CHR: CacheReadStep
+CHW: CacheWriteStep
+RF: RfactorStep
