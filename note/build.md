@@ -54,7 +54,7 @@ relay/transform包含了许多**图级别pass**
 
 ### Runtime execution
 
-之前的所有阶段，编译完毕后可以生成一个[tvm.runtime.Module](https://link.zhihu.com/?target=https%3A//tvm.apache.org/docs/api/python/runtime.html%23tvm.runtime.Module)，除此之外还有一个利器，就是[tvm.runtime.PackedFunc](https://link.zhihu.com/?target=https%3A//tvm.apache.org/docs/api/python/runtime.html%23tvm.runtime.PackedFunc)接口，它提供了一个类型擦除的函数式转换工具，可以接受或者返回以下类型的对象：POD types(int, float), string, runtime.PackedFunc, runtime.Module, runtime.NDArray, and other sub-classes of runtime.Object.
+之前的所有阶段，编译完毕后可以生成一个[tvm.runtime.Module](https://tvm.apache.org/docs/reference/api/python/runtime.html#tvm.runtime.Module)，除此之外还有一个利器，就是[tvm.runtime.PackedFunc](https://tvm.apache.org/docs/reference/api/python/runtime.html#tvm.runtime.PackedFunc)接口，它提供了一个类型擦除的函数式转换工具，可以接受或者返回以下类型的对象：POD types(int, float), string, runtime.PackedFunc, runtime.Module, runtime.NDArray, and other sub-classes of runtime.Object.
 
 有了这两个接口，就可以轻松实现：首先使用LLVM来生成某个CUDA代码的主机端代码，并计算启动参数，然后使用packedFunc接口打包CUDAModule来进行设备端的调用；
 
@@ -68,9 +68,11 @@ relay/transform包含了许多**图级别pass**
 
 #### 准备工作
 
-relay.build()函数会进入python/tvm/relay/build_module.py，首先判断有没有autotvm预先tune好记录，然后构造tophub_context。
+`relay.build()`函数会进入`python/tvm/relay/build_module.py`，首先判断有没有autotvm预先tune好记录，然后构造tophub_context。
 
-TVM官方提供了一部分预先调好的优化参数，存放在一个缓冲目录中，如果你恰巧在对应设备上使用了对应的运算，那么就可以直接复用参数。一般来说，这些参数会存放在~/.tvm/tophub/下。文件里面说明了# This is the pre-tuned parameters for x86 cpu backend. TVM downloaded this during compilation
+TVM官方提供了一部分预先调好的优化参数，存放在一个缓冲目录中，如果你恰巧在对应设备上使用了对应的运算，那么就可以直接复用参数。一般来说，这些参数会存放在`~/.tvm/tophub/`下。
+
+文件里面说明了 "# This is the pre-tuned parameters for x86 cpu backend. TVM downloaded this during compilation"
 
 
 ```python
@@ -106,7 +108,7 @@ class BuildModule(object):
 tvm._ffi._init_api("relay.build_module", __name__)
 ```
 
-c++函数位于src/relay/backend/build_module.cc
+c++函数位于`src/relay/backend/build_module.cc`
 
 ```c++
 TVM_REGISTER_GLOBAL("relay.build_module._BuildModule").set_body([](TVMArgs args, TVMRetValue* rv) {
@@ -134,7 +136,9 @@ PackedFunc GetFunction(const std::string& name, const ObjectPtr<Object>& sptr_to
 }
 ```
 
-python中调用的bld_mod.build会再去调用c++中的Build->BuildRelay
+python中调用的bld_mod.build会再去调用c++中的`RelayBuildModule::build`，接着会调用 BuildRelay
+
+
 
 ```c++
 void Build(IRModule mod, const Array<Target>& raw_targets, const tvm::Target& target_host,
@@ -167,9 +171,10 @@ void Build(IRModule mod, const Array<Target>& raw_targets, const tvm::Target& ta
 */
 void BuildRelay(IRModule relay_module, const String& mod_name) {
   // Relay IRModule -> IRModule optimizations.
-  1. 对relay ir做优化,执行优化pass
+  
   IRModule module = WithAttrs(
       relay_module, {{tvm::attr::kExecutor, executor_}, {tvm::attr::kRuntime, runtime_}});
+  1. 执行图级优化。里面会添加一系列graph级别pass
   relay_module = OptimizeImpl(std::move(module));
   
   // 获取更新的函数和新的 IRModule 来构建。
@@ -184,18 +189,14 @@ void BuildRelay(IRModule relay_module, const String& mod_name) {
                                     {tvm::attr::kConstantMemoryPools, constant_memory_pools_}});
   
   // Generate code for the updated function.
-  // 计算图生成。判断是生成 GraphCodegen 还是 AOTCodegen
-  3. 创建执行器对应的代码生成器
+  3. 计算图生成。判断是生成 GraphCodegen 还是 AOTCodegen
   executor_codegen_ = MakeExecutorCodegen(executor_->name);
-  4. 初始化代码生成器
   executor_codegen_->Init(nullptr, config_->primitive_targets);
-  5. 对找到的main函数生成代码
+  4. 对找到的main函数生成代码
   executor_codegen_->Codegen(func_module, func, mod_name);
-  6. 更新输出
   executor_codegen_->UpdateOutput(&ret_);
-  7. 获取参数
   ret_.params = executor_codegen_->GetParams();
-  
+  5. 获得 lowered_funcs
   auto lowered_funcs = executor_codegen_->GetIRModule();
   
   // No need to build for external functions.
@@ -219,7 +220,7 @@ void BuildRelay(IRModule relay_module, const String& mod_name) {
       ret_.mod = tvm::codegen::CSourceModuleCreate(";", "", Array<String>{});
     }
   } else {
-    8. 打包tir运行时
+    6. 打包tir运行时
     ret_.mod = tvm::TIRToRuntime(lowered_funcs, host_target);
   }
   
@@ -231,7 +232,7 @@ void BuildRelay(IRModule relay_module, const String& mod_name) {
   for (tvm::runtime::Module mod : ext_mods) {
     auto pf_var = mod.GetFunction("get_const_vars");
     if (pf_var != nullptr) {
-      9. 删除常量
+      7. 删除常量
       Array<String> variables = pf_var();
       for (size_t i = 0; i < variables.size(); i++) {
         auto it = ret_.params.find(variables[i].operator std::string());
@@ -265,7 +266,7 @@ IRModule OptimizeImpl(IRModule relay_module) {
   ICHECK(relay_module.defined()) << "The IRModule must be defined for the Relay compiler.";
 
   backend::BindParamsInModule(relay_module, params_);
-
+  1. 初始化 Array<Pass>
   Array<Pass> pass_seqs =
       GetPassPrefix(/*is_homogenous=*/config_->primitive_targets.size() == 1, /*is_vm=*/false);
   transform::PassContext pass_ctx = PassContext::Current();
@@ -286,6 +287,7 @@ IRModule OptimizeImpl(IRModule relay_module) {
   pass_seqs.push_back(transform::FuseOps());
 
   // Create a sequential pass and perform optimizations.
+  2. 创建 sequential pass
   transform::Pass seq = transform::Sequential(pass_seqs);
   if (config_->optional_homogeneous_target.defined()) {
     With<Target> tctx(config_->optional_homogeneous_target);
@@ -296,32 +298,12 @@ IRModule OptimizeImpl(IRModule relay_module) {
 
   // Do layout rewrite for auto-scheduler.
   if (backend::IsAutoSchedulerEnabled() && config_->optional_homogeneous_target.defined()) {
-    Pass major_pass = transform::AutoSchedulerLayoutRewrite();
-    bool enable_layout_rewrite_targets =
-        config_->optional_homogeneous_target->kind->device_type == kDLCPU ||
-        config_->optional_homogeneous_target->GetAttr<String>("device", "") == "mali";
-    if (enable_layout_rewrite_targets && pass_ctx.PassEnabled(major_pass->Info())) {
-      With<Target> tctx(config_->optional_homogeneous_target);
-      relay_module = major_pass(relay_module);
-      // Defuse ops to fold constants, then fuse them again
-      relay_module = transform::DefuseOps()(relay_module);
-      relay_module = transform::FoldConstant()(relay_module);
-      relay_module = transform::FuseOps()(relay_module);
+      ...
     }
   }
   // do layout rewrite for metaschedule
   if (backend::IsMetaScheduleEnabled() && config_->optional_homogeneous_target.defined()) {
-    Pass major_pass = transform::MetaScheduleLayoutRewrite();
-    bool enable_layout_rewrite_targets =
-        config_->optional_homogeneous_target->kind->device_type == kDLCPU ||
-        config_->optional_homogeneous_target->GetAttr<String>("device", "") == "mali";
-    if (enable_layout_rewrite_targets && pass_ctx.PassEnabled(major_pass->Info())) {
-      With<Target> tctx(config_->optional_homogeneous_target);
-      relay_module = major_pass(relay_module);
-      // Defuse ops to fold constants, then fuse them again
-      relay_module = transform::DefuseOps()(relay_module);
-      relay_module = transform::FoldConstant()(relay_module);
-      relay_module = transform::FuseOps()(relay_module);
+      ...
     }
   }
 
@@ -339,7 +321,7 @@ IRModule OptimizeImpl(IRModule relay_module) {
 }
 ```
 
-上面还有个metaschedule开关
+可以看到对于 ansor 以及 metaschedule 是需要添加一些特别的 pass 的
 
 ##### 计算图生成
 
@@ -399,11 +381,11 @@ class GraphExecutorCodegenModule : public runtime::ModuleNode {
 
 遍历 relay::Function func，然后生成计算图。
 
-内存分配：由函数relay.backend.GraphPlanMemory实现；src/relay/backend/graph_plan_memory.cc
+内存分配：由函数`relay.backend.GraphPlanMemory`实现；`src/relay/backend/graph_plan_memory.cc`
 
-VisitExpr对节点进行遍历并进行节点信息的记录。
+`VisitExpr`对节点进行遍历并进行节点信息的记录。
 
-LowerExternalfunctions完成ir节点到tir节点的转化以及schedule的优化。
+`LowerExternalfunctions`完成ir节点到tir节点的转化以及schedule的优化。
 
 [细节参考](https://zhuanlan.zhihu.com/p/339566528)
 
@@ -499,7 +481,7 @@ LoweredOutput Codegen(IRModule mod, relay::Function func, String mod_name) {
 
 ##### 后端代码生成
 
-Relay得到lower后的函数，将做后端代码生成，跳转到src/driver/driver_api.cc中的TIRToRuntime函数（注意这里重载了多种实现），然后跳转到核心build，这里的build函数支持异构编译，需要在inputs划分好不同硬件设施。
+Relay得到lower后的函数，将做后端代码生成，跳转到`src/driver/driver_api.cc`中的TIRToRuntime函数（注意这里重载了多种实现），然后跳转到核心build，这里的build函数支持异构编译，需要在inputs划分好不同硬件设施。
 （其实不是很清楚怎么跳转到这个函数的）
 
 ```c++
@@ -601,7 +583,7 @@ runtime::Module Build(IRModule mod, Target target) {
 }
 ```
 
-以生成LLVM IR为例，codegen.build_llvm会在src/runtime/registry.cc注册，然后调用到src/target/llvm/codegen_llvm.cc中的LLVMModuleNode->Init。这时会跳转到src/codegen/llvm/codegen_llvm.cc中的CodeGenLLVM类进行代码生成。
+以生成LLVM IR为例，`codegen.build_llvm`会在src/runtime/registry.cc注册，然后调用到src/target/llvm/codegen_llvm.cc中的`LLVMModuleNode->Init`。这时会跳转到src/codegen/llvm/codegen_llvm.cc中的`CodeGenLLVM`类进行代码生成。
 
 [参考](https://zhuanlan.zhihu.com/p/381691430)
 
@@ -666,7 +648,3 @@ GraphExecutorFactory::GraphExecutorFactory(
   module_name_ = module_name;
 }
 ```
-
-### tvm.build
-1. 代码Lowering
-2. 代码生成

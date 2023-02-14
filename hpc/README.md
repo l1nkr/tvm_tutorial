@@ -2,17 +2,24 @@
 这个对自己其实也是一种巩固，之前其实也没有弄的特别清楚。
 
 ## 手工进行优化
+
 https://github.com/flame/how-to-optimize-gemm
+
 https://github.com/BBuf/tvm_mlir_learn/tree/main/optimize_gemm/how_to_optimize_gemm
 
 ## tvm 中的调度原语
+
 [调度原语](./schedule_intrinsic/)
+
 https://zhuanlan.zhihu.com/p/94846767
+
 https://github.com/StrongSpoon/tvm.schedule
 
 
 ## 利用tvm进行优化
+
 https://zhuanlan.zhihu.com/p/508283737
+
 https://github.com/BBuf/tvm_mlir_learn/tree/main/optimize_gemm/optimize_matmul_in_gemm
 
 ## 相关知识
