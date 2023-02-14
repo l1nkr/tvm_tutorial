@@ -1,4 +1,12 @@
-如何在relay中添加一个算子
+## 如何在relay中添加一个算子
+
+我们理下整个流程：
+
+1. 当tvm中实现一个算子时，会调用 RELAY_REGISTER_OP进行注册；
+
+2. 该注册会在 AttrRegistry<OpRegEntry, Op>（这是个单例模式的类）的entry_map_中加入一个OpRegEntry实例；
+
+3. 而tvm处理一个外部输入的模型时，如果遇到这个算子，在Op::Get方法中从entry_map_表中读取对应的OpRegEntry实例：
 
 ```c++
 #define RELAY_REGISTER_OP(OpName) TVM_REGISTER_OP(OpName)
@@ -43,14 +51,6 @@ EntryType& RegisterOrGet(const String& name) {
 }
 
 ```
-
-综上所述，我们理下整个流程：
-
-1. 当tvm中实现一个算子时，会调用 RELAY_REGISTER_OP进行注册；
-
-2. 该注册会在 AttrRegistry<OpRegEntry, Op>（这是个单例模式的类）的entry_map_中加入一个OpRegEntry实例；
-
-3. 而tvm处理一个外部输入的模型时，如果遇到这个算子，在Op::Get方法中从entry_map_表中读取对应的OpRegEntry实例：
 
 TVM_REGISTER_OP执行时，每注册一个op，都会创建OpRegEntry数据结构的一个实例
 

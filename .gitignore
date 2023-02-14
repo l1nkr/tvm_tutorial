@@ -12,3 +12,5 @@ user_tutorial/Getting_Starting_using_TVMC_Python/convertedModel
 *.npz
 *.tar
 *.json
+
+note/total_latency.tsv

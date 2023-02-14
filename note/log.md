@@ -184,10 +184,27 @@ with autotvm.apply_history_best("matmul.log"):
         func = tvm.build(s, arg_bufs)
 
 ```
-详情[参考](./read_code.md#autotvm执行过程)
+详情[参考](./tuning.md)
 
 最后得到的log格式
 result: MeasureResult(costs=(0.0120379658,), error_no=MeasureErrorNo.NO_ERROR, all_cost=0.6942737102508545, timestamp=1672653690.186004)
+
+### 给出一个task的样子
+
+[](./image/log/tasks.jpg)
+[](./image/log/task.jpg)
+
+可以看到 autotvm 的调度空间似乎并不是很大，以task0为例，调度空间的大小仅为2*7*11*2=308
+
+对于`task0`调优之后得到的结果为
+
+```json
+{"input": ["llvm -keys=cpu ", "conv2d_NCHWc.x86", [["TENSOR", [1, 3, 224, 224], "float32"], ["TENSOR", [64, 3, 7, 7], "float32"], [2, 2], [3, 3, 3, 3], [1, 1], "NCHW", "NCHW", "float32"], {}], "config": {"index": 172, "code_hash": null, "entity": [["tile_ic", "sp", [-1, 1]], ["tile_oc", "sp", [-1, 4]], ["tile_ow", "sp", [-1, 1]], ["unroll_kw", "ot", false]]}, "result": [[0.0045656413], 0, 0.5309267044067383, 1676344759.520081], "version": 0.2, "tvm_version": "0.10.0"}
+{"input": ["llvm -keys=cpu ", "conv2d_NCHWc.x86", [["TENSOR", [1, 3, 224, 224], "float32"], ["TENSOR", [64, 3, 7, 7], "float32"], [2, 2], [3, 3, 3, 3], [1, 1], "NCHW", "NCHW", "float32"], {}], "config": {"index": 47, "code_hash": null, "entity": [["tile_ic", "sp", [-1, 3]], ["tile_oc", "sp", [-1, 4]], ["tile_ow", "sp", [-1, 64]], ["unroll_kw", "ot", true]]}, "result": [[0.0035256785999999997], 0, 1.644679069519043, 1676344759.90915], "version": 0.2, "tvm_version": "0.10.0"}
+...
+```
+
+## Ansor 
 
 关于ansor生成的.json文件的解析，
 https://discuss.tvm.apache.org/t/explanation-of-autoscheduler-transform-steps/9512/3
