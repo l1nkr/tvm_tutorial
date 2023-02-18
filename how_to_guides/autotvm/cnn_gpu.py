@@ -141,8 +141,8 @@ dtype = "float32"
 tuning_option = {
     "log_filename": log_file,
     "tuner": "xgb",
-    "n_trial": 2000,
-    "early_stopping": 600,
+    "n_trial": 200,
+    "early_stopping": 100,
     "measure_option": autotvm.measure_option(
         builder=autotvm.LocalBuilder(timeout=10),
         runner=autotvm.LocalRunner(number=20, repeat=3, timeout=4, min_repeat_ms=150),

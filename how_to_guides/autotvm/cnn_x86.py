@@ -121,7 +121,7 @@ def tune_and_evaluate(tuning_opt):
     # run tuning tasks
     tune_kernels(tasks, **tuning_opt)
     # tune 图为什么需要log_file呢？log_file是在算子调优的时候产生的呀，这里还需要用到上面的结果吗
-    tune_graph(mod["main"], data_shape, log_file, graph_opt_sch_file)
+    # tune_graph(mod["main"], data_shape, log_file, graph_opt_sch_file)
 
     # compile kernels in default mode
     # print("Evaluation of the network compiled in 'default' mode without auto tune:")
@@ -159,7 +159,7 @@ batch_size = 1
 dtype = "float32"
 model_name = "resnet-18"
 # log_file = "%s.log" % model_name
-log_file = "/Users/fl/github/tvm_tutorial/how_to_guides/autotvm/resnet-18.log"
+log_file = "%_cnn_x86.log"
 graph_opt_sch_file = "%s_graph_opt.log" % model_name
 
 # Set the input name of the graph

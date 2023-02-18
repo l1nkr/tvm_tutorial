@@ -72,6 +72,8 @@ GridSearchTuner 也是一种调优器。继承关系：GridSearchTuner -> IndexB
 
 [参考](https://zhuanlan.zhihu.com/p/457722423)
 
+[参考](https://www.zhihu.com/question/374117826/answer/2549192075)
+
 ## autotvm.apply_history_best()
 
 在使用relay.build之前，通常都会有这么一句
@@ -103,3 +105,5 @@ def __init__(
         _ffi_transform_api.PassContext, opt_level, required, disabled, instruments, config
     )
 ```
+
+[Ansor](https://blog.csdn.net/jinzhuojun/article/details/121296836)
